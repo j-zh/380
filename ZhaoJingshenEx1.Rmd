@@ -1,0 +1,274 @@
+---
+title: "Exercise 1 for Dr. Scott"
+author: "J. Zhao (jz5223)"
+date: "August 5, 2015"
+output: word_document
+---
+
+```{r}
+jingshen_seed = 8148154
+set.seed(jingshen_seed)
+```
+
+## Exploratory analysis
+
+For the georgia2000 (g2k) dataset, I will use the dplyr library to do group-by / pivot tables and the lattice library for bar charts.
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(lattice)
+```
+```{r}
+g2k = read.csv("../data/georgia2000.csv", header=T)
+g2k$undercount = g2k$ballots-g2k$votes
+
+pivot = summarise(group_by(g2k, equip),
+                  sum_undercount = sum(undercount),
+                  sum_ballot = sum(ballots),
+                  pct_undercount = round(sum_undercount/sum_ballot*100, 2))
+pivot
+barchart(pct_undercount~equip, data=pivot, ylab="% Undercount", origin=0)
+```
+
+At the state level tally, PUNCH has the highest undercount of 4.67%, followed by LEVER with 3.98%. OPTICAL is associated with the lowest state-wide average vote undercount of 2.72%.
+
+Using the same summarise function from above, I further grouped by "poor" to see if equipment choice has a disparate impact on poor vs. non-poor communities.
+
+```{r, echo=FALSE}
+pivot_poor = summarise(group_by(g2k, equip, poor),
+                       sum_undercount = sum(undercount),
+                       sum_ballot = sum(ballots),
+                       pct_undercount = round(sum_undercount/sum_ballot*100, 2))
+pivot_poor
+```
+
+```{r}
+barchart(pct_undercount~equip, data=pivot_poor, groups=poor,
+         ylab="% Undercount", origin=0,
+         auto.key=list(space="right", title="poor", cex.title=1))
+```
+
+OPTICAL seems to discriminate against poor communities. This bar chart suggests that PAPER or LEVER should be used for poor communities.
+
+```{r}
+hist(g2k$perAA)
+abline(v=mean(g2k$perAA),col="blue")
+abline(v=median(g2k$perAA),col="red")
+```
+
+Based on the histogram, I decided on a perAA cut-off of 25%, meaning that counties with more than 25% African Americans will be categorized as a "minority community" for the purposes of this exercise.
+
+I used the same barchart function from lattice to make the following:
+
+```{r, echo=FALSE}
+g2k$highAA <- ""
+g2k$highAA[which(g2k$perAA <= .25)] <- "Counties with 25% or less African Americans"
+g2k$highAA[which(g2k$perAA > .25)] <- "Counties with more than 25% African Americans"
+
+pivot_AA = summarise(group_by(g2k, equip, highAA),
+                     sum_undercount = sum(undercount),
+                     sum_ballot = sum(ballots),
+                     pct_undercount = sum_undercount/sum_ballot*100)
+barchart(pct_undercount~equip, data=pivot_AA, groups=highAA, ylab="% Undercount", origin=0, auto.key=T)
+```
+
+Overall, minority communities have higher undercount (minority being roughly defined as "more African American population than average"). PAPER and OPTICAL produce a large difference between minority and non-minority communities, whereas LEVER is non-discriminatory by this criterion.
+
+## Bootstraping
+
+```{r, warning=FALSE, message=FALSE}
+library(fImport)
+library(foreach)
+library(mosaic)
+```
+
+```{r}
+tickers = c("SPY", "TLT", "LQD", "EEM", "VNQ")
+prices = yahooSeries(tickers, from='2010-08-01', to='2015-07-31')
+
+YahooPricesToReturns = function(series) {
+	mycols = grep('Adj.Close', colnames(series))
+	closingprice = series[,mycols]
+	N = nrow(closingprice)
+	percentreturn = as.data.frame(closingprice[2:N,]) / as.data.frame(closingprice[1:(N-1),]) - 1
+	mynames = strsplit(colnames(percentreturn), '.', fixed=TRUE)
+	mynames = lapply(mynames, function(x) return(paste0(x[1], ".PctReturn")))
+	colnames(percentreturn) = mynames
+	as.matrix(na.omit(percentreturn))
+}
+returns = YahooPricesToReturns(prices)
+
+mean(returns[,1]) #SPY
+sd(returns[,1])
+mean(returns[,2]) #TLT
+sd(returns[,2])
+mean(returns[,3]) #LQD
+sd(returns[,3])
+mean(returns[,4]) #EEM
+sd(returns[,4])
+mean(returns[,5]) #VNQ
+sd(returns[,5])
+```
+
+LQD seemed to be low-return and low-risk based on mean and standard deviation. LQD and SPY have lower standard deviations than even the US Treasury Bonds (TLT), so I will consider them low-risk, especially LQD. The EEM ETF had the lowest average returns and the highest standard deviation, which makes sense because it is following the emerging markets. VNQ had the second highest standard deviation, and thus I will pick EEM and VNQ for my high-risk portfolio.
+
+Next, I wanted to compare the latter four ETF's against the movement of the S&P 500 (SPY), to find out whether the other ETF's move with or against the market, and to what degree.
+
+```{r}
+coef(lm(returns[,2]~returns[,1])) #TLT
+coef(lm(returns[,3]~returns[,1])) #LQD
+coef(lm(returns[,4]~returns[,1])) #EEM
+coef(lm(returns[,5]~returns[,1])) #VNQ
+```
+
+The coefficients from the linear models further support my initial choice of LQD as low-risk. The TLT seems to move against the market somewhat, making it a good choice for my low-risk portfolio to count-act the S&P 500. When the market is going up or down, VNQ and EEM tend to move in the same direction but with a higher magnitude, which further support them as higher-risk ETF's.
+
+```{r}
+initial_funding = 100000
+n_days = 20
+set.seed(jingshen_seed)
+bootstrap_even = foreach(i=1:1000, .combine='rbind') %do% {
+  totalwealth = initial_funding
+	weights = c(0.2, 0.2, 0.2, 0.2, 0.2)
+	holdings = weights * totalwealth
+	wealthtracker = rep(0, n_days)
+	for(today in 1:n_days) {
+		return.today = resample(returns, 1, orig.ids=FALSE)
+		holdings = holdings + holdings*return.today
+		totalwealth = sum(holdings)
+		wealthtracker[today] = totalwealth
+    holdings = weights * totalwealth
+	}
+	wealthtracker
+}
+hist(bootstrap_even[,n_days], breaks=25, main="1000 Resamples with an Even-Split Portfolio", xlab="Total Wealth After 20 Days ($)")
+
+quantile(bootstrap_even[,n_days] - initial_funding, 0.25)
+quantile(bootstrap_even[,n_days] - initial_funding, 0.5)
+quantile(bootstrap_even[,n_days] - initial_funding, 0.75)
+quantile(bootstrap_even[,n_days] - initial_funding, 0.75) - quantile(bootstrap_even[,n_days] - initial_funding, 0.25) #IQR
+
+```
+
+With the even-split portfolio, the average sample returned $700. Below I will run the same chunck of script on my low-risk and high-risk portfolios.
+
+```{r, include=FALSE}
+initial_funding = 100000
+n_days = 20
+set.seed(jingshen_seed)
+bootstrap_lowrisk = foreach(i=1:1000, .combine='rbind') %do% {
+  totalwealth = initial_funding
+	weights = c(0.3, 0.3, 0.4, 0, 0)
+	holdings = weights * totalwealth
+	wealthtracker = rep(0, n_days)
+	for(today in 1:n_days) {
+		return.today = resample(returns, 1, orig.ids=FALSE)
+		holdings = holdings + holdings*return.today
+		totalwealth = sum(holdings)
+		wealthtracker[today] = totalwealth
+    holdings = weights * totalwealth
+	}
+	wealthtracker
+}
+hist(bootstrap_lowrisk[,n_days], breaks=25, main="1000 Resamples with a Low-Risk Portfolio", xlab="Total Wealth After 20 Days ($)")
+```
+
+```{r}
+quantile(bootstrap_lowrisk[,n_days] - initial_funding, 0.25)
+quantile(bootstrap_lowrisk[,n_days] - initial_funding, 0.5)
+quantile(bootstrap_lowrisk[,n_days] - initial_funding, 0.75)
+quantile(bootstrap_lowrisk[,n_days] - initial_funding, 0.75) - quantile(bootstrap_lowrisk[,n_days] - initial_funding, 0.25) #IQR
+```
+
+The 50th sample quantile increased by a mere $80 in the conversative portfolio, which was comprised of 40% LQD, and 30% each of SPY and TLT. The inter-quartile range decreased by about $1,080, signifying that it is indeed a safer bet.
+
+```{r, include=FALSE}
+initial_funding = 100000
+n_days = 20
+set.seed(jingshen_seed)
+bootstrap_highrisk = foreach(i=1:1000, .combine='rbind') %do% {
+  totalwealth = initial_funding
+	weights = c(0, 0, 0, 0.5, 0.5)
+	holdings = weights * totalwealth
+	wealthtracker = rep(0, n_days)
+	for(today in 1:n_days) {
+		return.today = resample(returns, 1, orig.ids=FALSE)
+		holdings = holdings + holdings*return.today
+		totalwealth = sum(holdings)
+		wealthtracker[today] = totalwealth
+    holdings = weights * totalwealth
+	}
+	wealthtracker
+}
+hist(bootstrap_highrisk[,n_days], breaks=25, main="1000 Resamples with a High-Risk Portfolio", xlab="Total Wealth After 20 Days ($)")
+```
+
+```{r}
+quantile(bootstrap_highrisk[,n_days] - initial_funding, 0.5)
+quantile(bootstrap_highrisk[,n_days] - initial_funding, 0.25); quantile(bootstrap_highrisk[,n_days] - initial_funding, 0.75)
+```
+
+As expected, the high-risk portfolio of 50% EEM and 50% VNQ exhibited high potential gains and losses, with a 50th percentile of merely $465. I don't believe in luck, so I would advise investors to play it safe with my low-risk portfolio proposal.
+
+## Clustering and PCA
+
+```{r}
+library(ggplot2)
+set.seed(jingshen_seed)
+wine = read.csv("../data/wine.csv", header=T)
+winex = scale(wine[,1:11],center=TRUE, scale=TRUE)
+two_clusters = kmeans(winex, 2, nstart=500)
+prop.table(table(wine$color, two_clusters$cluster), margin = 1)
+qplot(color, data=wine, fill=factor(two_clusters$cluster))
+
+set.seed(jingshen_seed)
+five = kmeans(winex, 5, nstart=100)
+prop.table(table(wine$quality, five$cluster), margin = 1)
+qplot(quality, data=wine, fill=factor(five$cluster))
+```
+
+Two k-means clusters superimposed almost perfectly (~98.5%) on top of the actual red and white shows that it is not difficult to distinguish red wines from the white using the chemical properties given in the dataset. On the other hand, increasing the number of clusters could not differentiate wines by quality, as demonstrated by the very colorful graph above.
+
+```{r}
+winepca = prcomp(winex)
+plot(winepca, type="lines")
+summary(winepca)
+loadings = winepca$rotation
+scores = winepca$x
+qplot(scores[,1], scores[,2], col=wine$color, xlab='Component 1', ylab='Component 2')
+qplot(scores[,1], scores[,2], col=wine$quality, xlab='Component 1', ylab='Component 2')
+```
+
+As shown above, the first two principal components can predict color like k-means can, but PCA, too, cannot differentiate the wines' quality.
+
+
+## Market segmentation
+
+First, I removed the four bad categories as specified in the assignment, as well as "photo sharing" which I do not want to count as a theme because it is too broad in terms of content.
+```{r}
+tweets = read.csv("../data/social_marketing.csv", row.names=1)
+tweets = tweets[,-c(1,4,5,35,36)]
+```
+
+Then, I ran PCA on the user profiles, which are proportions of how much of each user's tweets are in each of the categories.
+```{r}
+profiles = tweets/rowSums(tweets)
+tweetspca = prcomp(profiles, scale=TRUE)
+scores = tweetspca$x
+loadings = tweetspca$rotation
+plot(tweetspca, type="lines")
+summary(tweetspca)
+```
+
+The first eight principal components explain roughly half of the variance, and thus I report the following eight market segments using the highest three categories in each segment.
+```{r}
+colnames(profiles)[tail(order(loadings[,1]),3)]
+colnames(profiles)[tail(order(loadings[,2]),3)]
+colnames(profiles)[tail(order(loadings[,3]),3)]
+colnames(profiles)[tail(order(loadings[,4]),3)]
+colnames(profiles)[tail(order(loadings[,5]),3)]
+colnames(profiles)[tail(order(loadings[,6]),3)]
+colnames(profiles)[tail(order(loadings[,7]),3)]
+colnames(profiles)[tail(order(loadings[,8]),3)]
+```
+
